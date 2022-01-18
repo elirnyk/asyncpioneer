@@ -451,6 +451,9 @@ class PioneerDevice(MediaPlayerEntity):
         self._hasZones = hasZones
         self._zone = zone
         self._zone_index = CONF_VALID_ZONES.index(zone)
+        self._max_volume = MAX_VOLUME if zone == "Main" else MAX_ZONE_VOLUME   
+        self._volume_direction = None
+        self._volume_target = None
         if inputs:
             self.hasNames = True
             self._source_number_to_name = inputs
@@ -542,10 +545,32 @@ class PioneerDevice(MediaPlayerEntity):
                 self._radio_stations_reversed.get(self.current_radio_station) \
                 + ")"
 
+    def setVolumeAndClean(self, volume):
+        self._volume_direction = None
+        self._volume_target = None
+        self._volume = volume / self._max_volume
+
+    def stepVolume(self, volume):
+        if self._volume_direction == 1 and volume < self._volume_target:
+            self.volume_up()
+        elif self._volume_direction == -1 and volume > self._volume_target:
+            self.volume_down()
+        else:
+            self.setVolumeAndClean(volume);
+
+    def handleVolumeUpdate(self, volume):
+        if self._volume_direction:
+            self.stepVolume(volume)
+        elif self._volume_target:
+            self._volume_direction = 1 if self._volume_target > volume else -1
+            self.stepVolume(volume)
+        else:
+            self._volume = volume / self._max_volume
+
 
     def parseData(self, data):
         msg = ""
-
+        _LOGGER.debug("Data: "+data)
         # Fluorescent display content
         if data[:2]=="FL":
             rest = data[2:]
@@ -733,13 +758,16 @@ class PioneerDevice(MediaPlayerEntity):
 
         # Volume level
         elif data[:3] == "VOL" and self._zone == "Main":
-            self._volume = int(data[3:6]) / MAX_VOLUME
+            self.handleVolumeUpdate(int(data[3:6]))
+            #self._volume = int(data[3:6]) / MAX_VOLUME
             _LOGGER.debug("Volume: " + str(round(self._volume*100))+"%")
         elif (data[:2] == "ZV" and self._zone == "Zone2"):
-            self._volume = int(data[2:4]) / MAX_ZONE_VOLUME
+            self.handleVolumeUpdate(int(data[2:4]))
+            #self._volume = int(data[2:4]) / MAX_ZONE_VOLUME
             _LOGGER.debug("Volume: " + str(round(self._volume*100))+"%")
         elif (data[:3] == "HZV" and self._zone == "HDZone"):
-            self._volume = int(data[3:5]) / MAX_ZONE_VOLUME
+            #self._volume = int(data[3:5]) / MAX_ZONE_VOLUME
+            self.handleVolumeUpdate(int(data[3:5]))
             _LOGGER.debug("Volume: " + str(round(self._volume*100))+"%")
 
         # Current speaker
@@ -790,6 +818,10 @@ class PioneerDevice(MediaPlayerEntity):
                 self.hasConnection = False
         return
 
+    def request_volume(self):
+        commands = ["?V", "?ZV", "?HZV"] 
+        self.telnet_command(commands[self._zone_index])  
+
     async def async_update(self):
         """Get the latest details from the device."""
         _LOGGER.debug(f"{self._zone} Update")
@@ -807,8 +839,7 @@ class PioneerDevice(MediaPlayerEntity):
 
         if self._power:
             # Volume?
-            commands = ["?V", "?ZV", "?HZV"] 
-            self.telnet_command(commands[self._zone_index])  
+            self.request_volume()
 
             # Muted?
             commands = ["?M", "?Z2M", "?HZM"] 
@@ -1038,6 +1069,10 @@ class PioneerDevice(MediaPlayerEntity):
         self.telnet_command(commands[self._zone_index])
 
     def set_volume_level(self, volume):
+        self._volume_target = round(volume * self._max_volume)
+        self.request_volume()
+
+    def set_volume_level_old(self, volume):
         """Set volume level, range 0..1."""
         # 60dB max
         if self._zone == "Main":
